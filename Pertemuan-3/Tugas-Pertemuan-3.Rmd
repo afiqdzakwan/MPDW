@@ -1,0 +1,264 @@
+---
+title: "Tugas MPDW R3"
+author: "Afiq Dzakwan Anasti - G1401231058"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+# Import Data & Library
+
+```{r}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+```{r}
+data <- read.csv("C:\\Users\\afiqd\\Downloads\\Sem 5\\MPDW\\Pertemuan 3\\NewDelhi_Air_quality.csv")
+
+data
+```
+
+# Pembagian Data
+
+```{r}
+train<-data[1:56,]
+test<-data[57:71,]
+```
+karena total data ada sebanyak 71 amatan, maka ketika dibagi 80:20, maka data latih ada sebanyak 56 amatan dan data uji ada sebanyak 15 amatan (dilakukan pembulatan).
+
+```{r}
+train.ts<-ts(train)
+test.ts<-ts(test)
+data.ts<-ts(data)
+```
+
+# Model Koyck
+
+$$
+y_t=a(1-\lambda)+\beta_0X_t+\beta_1Z_t+\lambda Y_{t-1}+V_t
+$$
+
+dengan $$V_t=u_t-\lambda u_{t-1}$$
+
+## Pemodelan
+
+```{r}
+model.koyck <- koyckDlm(
+  x = as.numeric(train$AQI),
+  y = as.numeric(train$pm25)
+)
+
+summary(model.koyck)
+AIC(model.koyck)
+BIC(model.koyck)
+```
+Di sini dilakukan subsetting di mana X adalah AQI dan y adalah PM2.5.
+
+Dari hasil tersebut, didapat bahwa peubah $x_t$ dan $y_{t-1}$ memiliki nilai $p-value<0.05$. Hal ini menunjukkan bahwa peubah $x_t$ dan $y_{t-1}$ berpengaruh signifikan terhadap $y$. Adapun model keseluruhannya adalah sebagai berikut:
+
+$$
+\hat{Y_t}=1.578+0.644X_t-0.032Y_{t-1}
+$$
+
+## Peramalan dan Akurasi
+
+Berikut adalah hasil peramalan y untuk 15 periode kedepan menggunakan model koyck:
+
+```{r}
+fore.koyck <- forecast(model = model.koyck, x=test$AQI, h=15)
+fore.koyck
+# Nilai MAPE data test
+(mape.koyck <- MAPE(fore.koyck$forecasts, test$pm25))
+# Akurasi data latih
+GoF(model.koyck)
+```
+
+Hasil menunjukkan bahwa nilai MAPE pada data latih maupun data uji tergolong sangat baik dalam model yang dihasilkan, yaitu sekitar 10% dan 5%.
+
+# Regression with Distributed Lag
+
+Regresi dengan atribut lag memerlukan suatu parameter q yang disesuaikan dengan banyaknya dan kondisi data. Agar hasil model maksimal, maka dapat ditentukan terlebih dahulu nilai q atau lag yang optimum.
+
+## Pemilihan *Lag* Optimum
+
+```{r warning=FALSE}
+finiteDLMauto(formula = pm25 ~ AQI,
+              data = data.frame(train), q.min = 1, q.max = 30,
+              model.type = "dlm", error.type = "AIC", trace = FALSE)
+```
+
+Berdasarkan output tersebut, lag optimum didapatkan ketika lag=26 (karena 27 sudah infinite). Selanjutnya dilakukan pemodelan untuk lag=26.
+
+```{r}
+model.dlm <- dlm(x = train$AQI,y = train$pm25 , q = 26)
+summary(model.dlm)
+AIC(model.dlm)
+BIC(model.dlm)
+```
+
+Dari hasil tersebut hanya peubah X4 yang signifikan terhadap taraf nyata 5%. Adapun keseluruhan model yang terbentuk adalah:
+
+$$
+\hat{Y_t}=-1.034-0.028X_t-0.053X_{t-1}+...-0.017X_{t-23}
+$$
+
+## Peramalan dan Akurasi
+
+Adapun hasil peramalan 15 periode kedepan menggunakan model tersebut adalah sebagai berikut:
+
+```{r}
+fore.dlm <- forecast(model = model.dlm, x=test$AQI, h=15)
+# MAPE data uji
+(mape.dlm<- MAPE(fore.dlm$forecasts, test$pm25))
+# Akurasi data latih
+GoF(model.dlm)
+```
+
+Model tersebut merupakan model yang sangat baik dengan nilai MAPE 0.01%.
+
+# Model Autoregressive
+
+Pemodelan Autoregressive membutuhkan dua parameter yaitu p dan q sesuai dengan kondisi data. Agar dihasilkan model yang lebih sesuai, maka dapat langsung menggunakan nilai yang optimum.
+
+## *Lag* Optimum
+
+```{r}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(data), ic = "AIC", 
+                                  formula = pm25 ~ AQI )
+min_p=c()
+for(i in 1:15){
+  min_p[i]=min(model.ardl.opt$Stat.table[[i]])
+}
+
+q_opt=which(min_p==min(min_p, na.rm = TRUE))
+p_opt=which(model.ardl.opt$Stat.table[[q_opt]] == 
+              min(model.ardl.opt$Stat.table[[q_opt]], na.rm = TRUE))
+data.frame("q_optimum" = q_opt, "p_optimum" = p_opt, 
+           "AIC"=model.ardl.opt$min.Stat)
+```
+Dari tabel di atas, dapat terlihat bahwa nilai AIC terendah didapat ketika $p=1$ dan $q=8$, yaitu sebesar `-203.1478`. Artinya, model autoregressive optimum didapat ketika $p=1$ dan $q=8$.
+
+## Pemodelan
+
+```{r}
+model.ardl <- ardlDlm(formula = pm25 ~ AQI, 
+                         data = train,p = 15 , q = 12)
+summary(model.ardl)
+AIC(model.ardl)
+BIC(model.ardl)
+```
+
+Hasil model menunjukkan tidak semua peubah signifikan terhadap Y, hanya pm25.1 yang signifikan dengan nilai p kurang dari 0.05. Model keseluruhannya adalah sebagai berikut:
+
+$$
+\hat{Y}=0.688-0.028X_t-0.004X_{t-1}-...+1.317Y_{t-1}+...-0.291Y_{t-12}
+$$
+
+## Peramalan dan Akurasi
+
+```{r}
+fore.ardl <- forecast(model = model.ardl, x=test$AQI, h=15)
+fore.ardl
+```
+
+Data di atas merupakan hasil peramalan untuk 15 periode ke depan menggunakan Model Autoregressive dengan $p=1$ dan $q=8$.
+
+```{r}
+# MAPE data uji
+mape.ardl <- MAPE(fore.ardl$forecasts, test$pm25)
+mape.ardl
+# Akurasi data latih
+GoF(model.ardl)
+```
+
+Model tersebut merupakan model yang sangat baik dengan nilai MAPE 0.06%.
+
+# Perbandingan Model
+
+```{r}
+akurasi <- matrix(c(mape.koyck, mape.dlm, mape.ardl))
+row.names(akurasi)<- c("Koyck","DLM","Autoregressive")
+colnames(akurasi) <- c("MAPE")
+akurasi
+```
+
+Berdasarkan nilai MAPE, model paling optimum didapat pada Model Autoregressive karena memiliki nilai MAPE yang terkecil.
+
+## Plot
+
+```{r}
+sorted_order <- order(test$AQI)
+
+sorted_aqi <- test$AQI[sorted_order]
+sorted_pm25_aktual <- test$pm25[sorted_order]
+sorted_koyck <- fore.koyck$forecasts[sorted_order]
+sorted_dlm <- fore.dlm$forecasts[sorted_order]
+sorted_ardl <- fore.ardl$forecasts[sorted_order]
+
+y_range <- range(c(sorted_pm25_aktual, sorted_koyck, sorted_dlm, sorted_ardl), na.rm = TRUE)
+
+plot(sorted_aqi, sorted_pm25_aktual, type = "b", col = "black", ylim = y_range,
+     xlab = "AQI", ylab = "PM2.5", main = "Perbandingan Hasil Prediksi Model (Diurutkan)")
+
+lines(sorted_aqi, sorted_koyck, type = "b", col = "red")
+lines(sorted_aqi, sorted_dlm, type = "b", col = "blue")
+lines(sorted_aqi, sorted_ardl, type = "b", col = "green")
+
+legend("topleft", legend = c("aktual", "koyck", "DLM", "autoregressive"),
+       col = c("black", "red", "blue", "green"), lty = 1, pch = 1, cex = 0.8)
+```
+Berdasarkan plot tersebut, terlihat bahwa plot yang paling mendekati data aktualnya adalah Model ARDL, sehingga dapat disimpulkan model terbaik dalam hal ini adalah model regresi ARDL dengan $p=1$ dan $q=8$. Berikut merupakan perbandingan secara jelas antara data aktual dengan hasil model ARDL:
+
+```{r}
+plot(sorted_aqi, sorted_pm25_aktual, type = "b", col = "black", ylim = y_range,
+     xlab = "AQI", ylab = "PM2.5", main = "Perbandingan Data Aktual vs. Prediksi ARDL")
+
+lines(sorted_aqi, sorted_ardl, type = "b", col = "blue")
+
+legend("topleft", legend = c("Aktual", "ARDL"),
+       col = c("black", "blue"), lty = 1, pch = 1, cex = 0.8)
+```
+
+# Uji Asumsi
+
+## SSE
+
+```{r}
+deviance(model.dlm$model)
+```
+
+## Autokorelasi
+
+```{r}
+dwtest(model.dlm$model)
+```
+
+## Heterogenitas
+
+```{r}
+bptest(model.dlm$model)
+```
+
+## Kenormalan
+
+```{r}
+shapiro.test(residuals(model.dlm$model))
+```
+
+Berdasarkan uji asumsi tersebut, model ARDL dengan $p=1$ dan $q=8$ menyatakan bahwa semua asumsi sudah terpenuhi karena nilai p yang dihasilkan lebih besar dari 0.05 baik pada tidak adanya autokorelasi, ragam sisaan homogen, bahkan sisan menyebar normal.
